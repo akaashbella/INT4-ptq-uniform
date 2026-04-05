@@ -15,6 +15,9 @@
 
 set -euo pipefail
 
+# GCC runtime for CompressAI / PyTorch C++ extensions — edit module name for your cluster.
+module load gcc
+
 # --- edit this ---
 RESULTS_ROOT="results"
 # -----------------
@@ -31,6 +34,7 @@ if [[ ! -d "$RESULTS_ROOT" ]]; then
 fi
 
 mkdir -p logs
+echo "DEBUG: gcc=$(command -v gcc 2>/dev/null || echo missing) $(gcc --version 2>&1 | head -n1)"
 source venv/bin/activate
 
 echo "SLURM_SUBMIT_DIR=${PWD}"

@@ -16,6 +16,9 @@
 
 set -euo pipefail
 
+# GCC runtime for CompressAI / PyTorch C++ extensions — edit module name for your cluster.
+module load gcc
+
 # --- edit these ---
 DATA_ROOT="/path/to/tiny-imagenet-200"
 OUTPUT_ROOT="/path/to/results"
@@ -55,6 +58,7 @@ if [[ ! -d "$OUT_PARENT" ]]; then
 fi
 
 mkdir -p logs
+echo "DEBUG: gcc=$(command -v gcc 2>/dev/null || echo missing) $(gcc --version 2>&1 | head -n1)"
 source venv/bin/activate
 
 echo "SLURM_SUBMIT_DIR=${PWD}"

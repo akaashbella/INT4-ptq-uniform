@@ -9,6 +9,7 @@ Plain bash scripts aligned with this repo’s CLI (`scripts/train_*.py`, `script
 3. **Logs directory**: `mkdir -p logs` (Slurm needs `logs/` for `%x_%A_%a` / `%x_%j` paths).
 4. **Edit each script’s variables** at the top (paths, `--mail-user`, optional `NUM_WORKERS`).
 5. **chmod**: `chmod +x scripts/slurm/*.sh` if your site requires it.
+6. **GCC**: each script runs `module load gcc` immediately after `set -euo pipefail` (change the module name/version if your cluster requires it, e.g. `gcc/12`). Before `source venv/bin/activate`, the job logs one line `DEBUG: gcc=…` with the resolved `gcc` path and first line of `gcc --version`.
 
 Each script checks **before Python runs**: YAML config file exists (train/eval), `venv/bin/activate` exists, dataset and path sanity (`DATA_ROOT`, `OUTPUT_ROOT` parent, or `RESULTS_ROOT` for aggregate).
 
