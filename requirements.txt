@@ -1,0 +1,8 @@
+# Pin versions in production runs; loosened here for compatibility.
+numpy>=1.24
+pandas>=2.0
+PyYAML>=6.0
+torch>=2.0
+torchvision>=0.15
+compressai>=1.2
+tqdm>=4.65
