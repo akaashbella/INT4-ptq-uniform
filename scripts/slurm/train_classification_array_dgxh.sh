@@ -20,8 +20,8 @@ set -euo pipefail
 module load gcc
 
 # --- edit these ---
-DATA_ROOT="/path/to/tiny-imagenet-200"
-OUTPUT_ROOT="/path/to/results"
+DATA_ROOT="/nfs/hpc/share/bellaak/research/INT4-ptq-uniform/tiny-imagenet-200"
+OUTPUT_ROOT="/nfs/hpc/share/bellaak/research/INT4-ptq-uniform/results"
 NUM_WORKERS=8
 # ------------------
 
