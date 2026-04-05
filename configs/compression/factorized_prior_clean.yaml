@@ -1,0 +1,23 @@
+task: compression
+dataset: tiny_imagenet
+model: factorized_prior
+regime: clean
+alpha: 0.0
+lambda_rd: 0.0130
+seeds: [0, 1, 2]
+epochs: 100
+batch_size: 32
+num_workers: 4
+results_dir: results
+data_root: data/tiny-imagenet-200
+bitwidths_eval: [fp32, w8, w6, w4]
+quant_mode: symmetric_per_tensor
+noise_scale_mode: per_tensor_std
+compressai_quality: 4
+compressai_metric: mse
+compressai_pretrained: false
+optim:
+  name: adam
+  lr: 0.0001
+  momentum: 0.9
+  weight_decay: 0.0
