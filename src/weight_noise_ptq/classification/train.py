@@ -114,10 +114,14 @@ def train_classification(
     def _worker_init(wid: int) -> None:
         worker_init_fn(wid, int(seed))
 
+    train_shuffle_gen = torch.Generator()
+    train_shuffle_gen.manual_seed(int(seed))
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
         shuffle=True,
+        generator=train_shuffle_gen,
         num_workers=nw,
         pin_memory=dev.type == "cuda",
         worker_init_fn=_worker_init if nw > 0 else None,

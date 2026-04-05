@@ -16,6 +16,9 @@ REGIMES: tuple[str, ...] = ("clean", "noisy_uniform_a0.02")
 
 RUN_SEEDS: tuple[int, ...] = (0, 1, 2)
 
+# Locked training length (YAML must match; validated in ``validators``).
+LOCKED_TRAIN_EPOCHS: int = 100
+
 # Post-training eval bitwidth labels (master CSV + eval JSON)
 BITWIDTH_LABELS: tuple[str, ...] = ("fp32", "w8", "w6", "w4")
 

@@ -39,8 +39,14 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer | None,
     metadata: CheckpointMetadata,
     extra_state: dict[str, Any] | None = None,
+    aux_optimizer: torch.optim.Optimizer | None = None,
 ) -> None:
-    """Atomically save model weights, optional optimizer, and metadata."""
+    """Atomically save model weights, optional optimizer(s), and metadata.
+
+    Compression checkpoints may include ``aux_optimizer_state_dict`` (CompressAI
+    entropy auxiliary parameters). Loaders that only restore ``model_state_dict``
+    remain unchanged.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {
@@ -49,6 +55,8 @@ def save_checkpoint(
     }
     if optimizer is not None:
         payload["optimizer_state_dict"] = optimizer.state_dict()
+    if aux_optimizer is not None:
+        payload["aux_optimizer_state_dict"] = aux_optimizer.state_dict()
     if extra_state:
         payload["extra"] = extra_state
     tmp = path.with_suffix(path.suffix + ".tmp")

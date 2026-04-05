@@ -41,19 +41,46 @@ from weight_noise_ptq.eval_helpers import evaluate_compression_loader
 logger = logging.getLogger(__name__)
 
 
-def _compression_train_loss(model: nn.Module, x: torch.Tensor, lambda_rd: float) -> torch.Tensor:
-    """Standard MSE RD plus CompressAI entropy-bottleneck auxiliary loss (training only)."""
+def _compressai_main_and_aux_parameters(model: nn.Module) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+    """Split trainable parameters into main-network vs CompressAI entropy auxiliary.
+
+    CompressAI exposes :meth:`aux_parameters` for entropy-bottleneck (etc.) params;
+    those must **not** appear in the main optimizer. We assert full partition with
+    no overlap so the two-optimizer setup cannot silently duplicate or omit tensors.
+    """
+    aux_callable = getattr(model, "aux_parameters", None)
+    if not callable(aux_callable):
+        raise RuntimeError(
+            f"Expected CompressAI-style model with aux_parameters(); got {type(model).__name__}.",
+        )
+    aux_params = list(aux_callable())
+    if not aux_params:
+        raise RuntimeError(
+            "model.aux_parameters() is empty; these zoo models require non-empty auxiliary parameters.",
+        )
+    aux_ids: set[int] = {id(p) for p in aux_params}
+    main_params = [p for p in model.parameters() if id(p) not in aux_ids]
+    if not main_params:
+        raise RuntimeError("Main parameter list is empty after removing aux_parameters().")
+    if aux_ids & {id(p) for p in main_params}:
+        raise AssertionError("Internal error: main and auxiliary parameter sets overlap.")
+    n_all = len(list(model.parameters()))
+    if len(main_params) + len(aux_params) != n_all:
+        raise AssertionError(
+            f"Parameter split mismatch: main+aux={len(main_params) + len(aux_params)} vs {n_all} total.",
+        )
+    return main_params, aux_params
+
+
+def _compression_rd_loss_only(model: nn.Module, x: torch.Tensor, lambda_rd: float) -> torch.Tensor:
+    """Rate–distortion loss only (MSE + λ·bpp); auxiliary entropy loss is optimized separately."""
     out = model(x)
     if not isinstance(out, dict) or "x_hat" not in out or "likelihoods" not in out:
         raise RuntimeError("CompressAI forward must return x_hat and likelihoods")
     mse = torch.nn.functional.mse_loss(out["x_hat"], x)
     n_pix = x.size(0) * x.size(2) * x.size(3)
     bpp = estimate_bpp_from_likelihoods(out["likelihoods"], n_pix)
-    rd = rate_distortion_loss(mse, bpp, lambda_rd)
-    total: torch.Tensor = rd
-    if hasattr(model, "aux_loss"):
-        total = total + model.aux_loss()
-    return total
+    return rate_distortion_loss(mse, bpp, lambda_rd)
 
 
 def train_compression(
@@ -107,10 +134,14 @@ def train_compression(
     def _worker_init(wid: int) -> None:
         worker_init_fn(wid, int(seed))
 
+    train_shuffle_gen = torch.Generator()
+    train_shuffle_gen.manual_seed(int(seed))
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
         shuffle=True,
+        generator=train_shuffle_gen,
         num_workers=nw,
         pin_memory=dev.type == "cuda",
         worker_init_fn=_worker_init if nw > 0 else None,
@@ -129,7 +160,9 @@ def train_compression(
         metric=cfg.compressai_metric,
         pretrained=cfg.compressai_pretrained,
     ).to(dev)
-    optimizer = build_optimizer(model, cfg.optim)
+    main_params, aux_params = _compressai_main_and_aux_parameters(model)
+    optimizer = build_optimizer(main_params, cfg.optim)
+    aux_optimizer = build_optimizer(aux_params, cfg.optim)
 
     train_log = TrainLogWriter(run_dir / "train_log.csv")
     val_log = ValLogWriter(run_dir / "val_log.csv")
@@ -168,15 +201,22 @@ def train_compression(
 
             if use_noise:
                 with temporary_uniform_weight_noise(model, alpha=alpha):
-                    loss = _compression_train_loss(model, x, lambda_rd)
-                    loss.backward()
+                    rd_loss = _compression_rd_loss_only(model, x, lambda_rd)
+                    rd_loss.backward()
             else:
-                loss = _compression_train_loss(model, x, lambda_rd)
-                loss.backward()
+                rd_loss = _compression_rd_loss_only(model, x, lambda_rd)
+                rd_loss.backward()
 
             optimizer.step()
 
-            li = float(loss.item())
+            aux_optimizer.zero_grad(set_to_none=True)
+            aux_loss = model.aux_loss()
+            if not isinstance(aux_loss, torch.Tensor):
+                aux_loss = torch.as_tensor(aux_loss, device=dev, dtype=torch.float32)
+            aux_loss.backward()
+            aux_optimizer.step()
+
+            li = float(rd_loss.item())
             running_loss += li
             n_batches += 1
             train_log.writerow(
@@ -249,6 +289,7 @@ def train_compression(
             model=model,
             optimizer=optimizer,
             metadata=last_meta,
+            aux_optimizer=aux_optimizer,
         )
 
         if val_rd < best_rd:
@@ -270,6 +311,7 @@ def train_compression(
                 model=model,
                 optimizer=optimizer,
                 metadata=best_meta,
+                aux_optimizer=aux_optimizer,
             )
 
     logger.info("Finished. best val_rd_loss=%.6f at epoch %s (run_dir=%s)", best_rd, best_epoch, run_dir)
