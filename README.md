@@ -146,24 +146,15 @@ Training runs also write `environment.json` per run via the same metadata collec
 
 ## Slurm (examples)
 
-Templates live in `scripts/slurm/`. Copy/edit placeholders:
+Job scripts live in `scripts/slurm/` (bash, `sbatch`-able). See `scripts/slurm/README.md` for the full grid, array indexing, and variables to edit (`DATA_ROOT`, `OUTPUT_ROOT`, mail, etc.).
 
-- `YOUR_ACCOUNT`, `YOUR_PARTITION`, `HH:MM:SS`, `YOUR_MEM`
-- Export `REPO_ROOT`, `DATA_ROOT`, `RESULTS_ROOT`, `CONFIG_PATH`, `SEED` (and `CHECKPOINT` for eval)
-
-Example:
+Example (submit from the repo root, after `mkdir -p logs` and editing paths inside the script):
 
 ```bash
-export REPO_ROOT=/path/to/INT4-ptq-uniform
-export DATA_ROOT=/path/to/tiny-imagenet-200
-export RESULTS_ROOT=${REPO_ROOT}/results
-export CONFIG_PATH=${REPO_ROOT}/configs/classification/resnet50_clean.yaml
-export SEED=0
-sbatch --export=ALL,REPO_ROOT,DATA_ROOT,RESULTS_ROOT,CONFIG_PATH,SEED \
-  scripts/slurm/train_classification.slurm
+sbatch scripts/slurm/train_classification_array_dgxh.sh
 ```
 
-Use **one job per (config, seed)** for the locked grid; combine with job arrays or your scheduler’s array syntax if desired.
+The locked **18-run** train/eval matrices use Slurm arrays (`0-17`); use the matching `*_array_dgxh.sh` for each stage.
 
 ## Logging (HPC)
 
