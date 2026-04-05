@@ -17,7 +17,8 @@
 set -euo pipefail
 
 # GCC runtime for CompressAI / PyTorch C++ extensions — edit module name for your cluster.
-module load gcc
+module purge
+module load gcc/11.5
 
 # --- edit these ---
 DATA_ROOT="/nfs/hpc/share/bellaak/research/INT4-ptq-uniform/tiny-imagenet-200"

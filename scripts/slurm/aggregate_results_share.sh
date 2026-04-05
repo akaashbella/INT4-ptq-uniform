@@ -16,7 +16,8 @@
 set -euo pipefail
 
 # GCC runtime for CompressAI / PyTorch C++ extensions — edit module name for your cluster.
-module load gcc
+module purge
+module load gcc/11.5
 
 # --- edit this ---
 RESULTS_ROOT="results"
