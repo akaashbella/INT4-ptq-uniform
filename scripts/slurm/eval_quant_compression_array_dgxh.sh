@@ -21,7 +21,8 @@ module purge
 module load gcc/11.5
 
 # --- edit these ---
-DATA_ROOT="/nfs/hpc/share/bellaak/research/INT4-ptq-uniform/tiny-imagenet-200"
+# Must be provided explicitly (edit here or export DATA_ROOT before sbatch).
+DATA_ROOT="${DATA_ROOT:-}"
 OUTPUT_ROOT="/nfs/hpc/share/bellaak/research/INT4-ptq-uniform/results"
 NUM_WORKERS=8
 # ------------------
@@ -48,7 +49,7 @@ if [[ ! -f venv/bin/activate ]]; then
   echo "ERROR: venv not found: ${PWD}/venv/bin/activate" >&2
   exit 1
 fi
-if [[ ! -d "$DATA_ROOT" ]]; then
+if [[ -z "${DATA_ROOT}" || "${DATA_ROOT}" == *"/path/to/"* || ! -d "${DATA_ROOT}" ]]; then
   echo "ERROR: DATA_ROOT is not a directory: ${DATA_ROOT}" >&2
   exit 1
 fi
