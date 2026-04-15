@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import logging
 from typing import Generator, Iterator
 
 import torch
 from torch import nn
+
+logger = logging.getLogger(__name__)
+_SAFE_FLOAT32_MAX = float(torch.finfo(torch.float32).max)
 
 
 def is_eligible_weight_param(module: nn.Module, param_name: str) -> bool:
@@ -58,6 +62,9 @@ def add_uniform_noise_to_eligible_weights(
     *,
     alpha: float,
     generator: torch.Generator | None = None,
+    debug_log: bool = False,
+    debug_batch_idx: int | None = None,
+    debug_epoch: int | None = None,
 ) -> None:
     """In-place add scaled uniform noise to eligible weights (must restore externally).
 
@@ -69,14 +76,52 @@ def add_uniform_noise_to_eligible_weights(
     convention on the upper end; for continuous weights this matches the
     locked design up to floating-point granularity.
     """
+    if not torch.isfinite(torch.tensor(alpha, dtype=torch.float64)):
+        raise RuntimeError(f"Noise alpha must be finite, got {alpha!r}")
+    alpha_f = float(alpha)
     gen = generator
-    for _, param, _ in iter_eligible_weight_parameters(model):
+    for name, param, _ in iter_eligible_weight_parameters(model):
         w = param.data
-        sigma = torch.std(w.float(), unbiased=False).clamp_min(1e-12)
-        low = -float(alpha) * sigma
-        high = float(alpha) * sigma
+        if not torch.isfinite(w).all():
+            raise RuntimeError(f"Non-finite weight tensor before noise injection: {name}")
+        w32 = w.float()
+        sigma_t = torch.std(w32, unbiased=False)
+        w_absmax = float(w32.abs().max().item())
+        if not torch.isfinite(sigma_t):
+            raise RuntimeError(f"Noise scale is non-finite for {name}: std={sigma_t.item()} absmax={w_absmax:.6e}")
+        sigma = max(float(sigma_t.item()), 1e-12)
+        scale = alpha_f * sigma
+        if not torch.isfinite(torch.tensor(scale, dtype=torch.float64)):
+            raise RuntimeError(
+                f"Noise scale is non-finite for {name}: alpha={alpha_f:.6e} std={sigma:.6e} absmax={w_absmax:.6e}",
+            )
+        low = -scale
+        high = scale
+        if not torch.isfinite(torch.tensor(low, dtype=torch.float64)) or not torch.isfinite(
+            torch.tensor(high, dtype=torch.float64)
+        ):
+            raise RuntimeError(f"Noise bounds are non-finite for {name}: low={low} high={high}")
+        if low >= high:
+            raise RuntimeError(f"Invalid noise bounds for {name}: low={low} high={high}")
+        clamped_low = max(low, -_SAFE_FLOAT32_MAX)
+        clamped_high = min(high, _SAFE_FLOAT32_MAX)
+        if clamped_low != low or clamped_high != high:
+            raise RuntimeError(
+                f"Noise bounds out of float32 range for {name}: low={low} high={high} (model likely diverged)",
+            )
+        if debug_log and debug_batch_idx == 0:
+            epoch_str = f" epoch={debug_epoch}" if debug_epoch is not None else ""
+            logger.info(
+                "Noise stats%s param=%s alpha=%.6e std=%.6e scale=%.6e absmax=%.6e",
+                epoch_str,
+                name,
+                alpha_f,
+                sigma,
+                scale,
+                w_absmax,
+            )
         noise = torch.empty_like(w)
-        noise.uniform_(low, high, generator=gen)
+        noise.uniform_(clamped_low, clamped_high, generator=gen)
         param.data.copy_(w + noise.to(dtype=w.dtype))
 
 
@@ -86,6 +131,9 @@ def temporary_uniform_weight_noise(
     *,
     alpha: float,
     generator: torch.Generator | None = None,
+    debug_log: bool = False,
+    debug_batch_idx: int | None = None,
+    debug_epoch: int | None = None,
 ) -> Generator[None, None, None]:
     """Save eligible weights, add noise, ``yield``, **always** restore in ``finally``.
 
@@ -98,7 +146,14 @@ def temporary_uniform_weight_noise(
     """
     state = _NoiseState.capture(model)
     try:
-        add_uniform_noise_to_eligible_weights(model, alpha=alpha, generator=generator)
+        add_uniform_noise_to_eligible_weights(
+            model,
+            alpha=alpha,
+            generator=generator,
+            debug_log=debug_log,
+            debug_batch_idx=debug_batch_idx,
+            debug_epoch=debug_epoch,
+        )
         yield
     finally:
         state.restore()

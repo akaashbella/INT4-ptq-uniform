@@ -42,33 +42,48 @@ logger = logging.getLogger(__name__)
 
 
 def _compressai_main_and_aux_parameters(model: nn.Module) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
-    """Split trainable parameters into main-network vs CompressAI entropy auxiliary.
+    """Split trainable params into main vs aux with CompressAI API compatibility.
 
-    CompressAI exposes :meth:`aux_parameters` for entropy-bottleneck (etc.) params;
-    those must **not** appear in the main optimizer. We assert full partition with
-    no overlap so the two-optimizer setup cannot silently duplicate or omit tensors.
+    Supports both model styles:
+    - explicit ``aux_parameters()`` method
+    - implicit entropy aux params discovered via ``named_parameters()`` entries
+      containing ``"quantiles"``.
     """
+    named_trainable = [(name, p) for name, p in model.named_parameters() if p.requires_grad]
+    aux_params: list[nn.Parameter] = []
+    aux_ids: set[int] = set()
+
     aux_callable = getattr(model, "aux_parameters", None)
-    if not callable(aux_callable):
-        raise RuntimeError(
-            f"Expected CompressAI-style model with aux_parameters(); got {type(model).__name__}.",
-        )
-    aux_params = list(aux_callable())
-    if not aux_params:
-        raise RuntimeError(
-            "model.aux_parameters() is empty; these zoo models require non-empty auxiliary parameters.",
-        )
-    aux_ids: set[int] = {id(p) for p in aux_params}
-    main_params = [p for p in model.parameters() if id(p) not in aux_ids]
+    if callable(aux_callable):
+        for p in aux_callable():
+            pid = id(p)
+            if pid in aux_ids or not p.requires_grad:
+                continue
+            aux_ids.add(pid)
+            aux_params.append(p)
+    else:
+        for name, p in named_trainable:
+            if "quantiles" not in name:
+                continue
+            pid = id(p)
+            if pid in aux_ids:
+                continue
+            aux_ids.add(pid)
+            aux_params.append(p)
+
+    main_params: list[nn.Parameter] = []
+    main_ids: set[int] = set()
+    for _, p in named_trainable:
+        pid = id(p)
+        if pid in aux_ids or pid in main_ids:
+            continue
+        main_ids.add(pid)
+        main_params.append(p)
+
     if not main_params:
-        raise RuntimeError("Main parameter list is empty after removing aux_parameters().")
-    if aux_ids & {id(p) for p in main_params}:
+        raise RuntimeError(f"No trainable main parameters found for {type(model).__name__}.")
+    if main_ids & aux_ids:
         raise AssertionError("Internal error: main and auxiliary parameter sets overlap.")
-    n_all = len(list(model.parameters()))
-    if len(main_params) + len(aux_params) != n_all:
-        raise AssertionError(
-            f"Parameter split mismatch: main+aux={len(main_params) + len(aux_params)} vs {n_all} total.",
-        )
     return main_params, aux_params
 
 
@@ -162,7 +177,13 @@ def train_compression(
     ).to(dev)
     main_params, aux_params = _compressai_main_and_aux_parameters(model)
     optimizer = build_optimizer(main_params, cfg.optim)
-    aux_optimizer = build_optimizer(aux_params, cfg.optim)
+    aux_optimizer = build_optimizer(aux_params, cfg.optim) if aux_params else None
+    logger.info(
+        "Compression optimizer split: model=%s main_params=%s aux_params=%s",
+        type(model).__name__,
+        len(main_params),
+        len(aux_params),
+    )
 
     train_log = TrainLogWriter(run_dir / "train_log.csv")
     val_log = ValLogWriter(run_dir / "val_log.csv")
@@ -209,12 +230,13 @@ def train_compression(
 
             optimizer.step()
 
-            aux_optimizer.zero_grad(set_to_none=True)
-            aux_loss = model.aux_loss()
-            if not isinstance(aux_loss, torch.Tensor):
-                aux_loss = torch.as_tensor(aux_loss, device=dev, dtype=torch.float32)
-            aux_loss.backward()
-            aux_optimizer.step()
+            if aux_optimizer is not None:
+                aux_optimizer.zero_grad(set_to_none=True)
+                aux_loss = model.aux_loss()
+                if not isinstance(aux_loss, torch.Tensor):
+                    aux_loss = torch.as_tensor(aux_loss, device=dev, dtype=torch.float32)
+                aux_loss.backward()
+                aux_optimizer.step()
 
             li = float(rd_loss.item())
             running_loss += li

@@ -42,6 +42,60 @@ from weight_noise_ptq.common.validators import validate_classification_config
 logger = logging.getLogger(__name__)
 
 
+def _tensor_summary(x: torch.Tensor) -> str:
+    x32 = x.detach().float()
+    finite = torch.isfinite(x32)
+    finite_count = int(finite.sum().item())
+    total = x32.numel()
+    if finite_count == 0:
+        return f"shape={tuple(x.shape)} finite=0/{total}"
+    vals = x32[finite]
+    return (
+        f"shape={tuple(x.shape)} finite={finite_count}/{total} "
+        f"min={float(vals.min().item()):.6e} max={float(vals.max().item()):.6e} "
+        f"mean={float(vals.mean().item()):.6e}"
+    )
+
+
+def _raise_non_finite(
+    *,
+    what: str,
+    tensor: torch.Tensor,
+    epoch: int,
+    batch_idx: int,
+    model_name: str,
+) -> None:
+    raise RuntimeError(
+        f"Non-finite {what} detected: epoch={epoch} batch={batch_idx} model={model_name} "
+        f"summary=({_tensor_summary(tensor)})",
+    )
+
+
+def _check_loss_finite(loss: torch.Tensor, *, epoch: int, batch_idx: int, model_name: str) -> None:
+    if not torch.isfinite(loss).all():
+        _raise_non_finite(what="loss", tensor=loss.detach(), epoch=epoch, batch_idx=batch_idx, model_name=model_name)
+
+
+def _check_gradients_finite(model: nn.Module, *, epoch: int, batch_idx: int, model_name: str) -> None:
+    for name, p in model.named_parameters():
+        if p.grad is None:
+            continue
+        if not torch.isfinite(p.grad).all():
+            raise RuntimeError(
+                f"Non-finite gradient detected: epoch={epoch} batch={batch_idx} model={model_name} "
+                f"param={name} summary=({_tensor_summary(p.grad)})",
+            )
+
+
+def _check_weights_finite(model: nn.Module, *, epoch: int, batch_idx: int, model_name: str) -> None:
+    for name, p in model.named_parameters():
+        if not torch.isfinite(p.data).all():
+            raise RuntimeError(
+                f"Non-finite model weights detected: epoch={epoch} batch={batch_idx} model={model_name} "
+                f"param={name} summary=({_tensor_summary(p.data)})",
+            )
+
+
 
 
 @torch.no_grad()
@@ -80,6 +134,8 @@ def train_classification(
     droot = Path(data_root) if data_root is not None else Path(cfg.data_root)
     dev = resolve_torch_device(device if isinstance(device, str) else (device if device is not None else None))
     nw = int(num_workers) if num_workers is not None else int(cfg.num_workers)
+    loader_timeout = float(cfg.dataloader_timeout_sec)
+    persistent_workers = bool(cfg.dataloader_persistent_workers) if nw > 0 else False
 
     run_dir = classification_run_dir(cfg.model, cfg.regime, seed, results_base=results_base)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -124,6 +180,8 @@ def train_classification(
         generator=train_shuffle_gen,
         num_workers=nw,
         pin_memory=dev.type == "cuda",
+        persistent_workers=persistent_workers,
+        timeout=loader_timeout,
         worker_init_fn=_worker_init if nw > 0 else None,
     )
     val_loader = DataLoader(
@@ -132,6 +190,16 @@ def train_classification(
         shuffle=False,
         num_workers=nw,
         pin_memory=dev.type == "cuda",
+        persistent_workers=persistent_workers,
+        timeout=loader_timeout,
+    )
+    logger.info(
+        "Classification dataloader: batch_size=%s num_workers=%s pin_memory=%s persistent_workers=%s timeout=%s",
+        cfg.batch_size,
+        nw,
+        dev.type == "cuda",
+        persistent_workers,
+        loader_timeout,
     )
 
     model = build_classification_model(
@@ -148,6 +216,9 @@ def train_classification(
     regime = cfg.regime
     use_noise = regime == "noisy_uniform_a0.02"
     alpha = float(cfg.alpha) if use_noise else 0.0
+    noise_warmup_epochs = int(cfg.noise_warmup_epochs)
+    grad_clip_norm = float(cfg.grad_clip_norm)
+    noise_debug_log_first_batch = bool(cfg.noise_debug_log_first_batch)
 
     best_top1 = -1.0
     best_epoch = -1
@@ -172,24 +243,37 @@ def train_classification(
             desc=f"train e{epoch + 1}/{cfg.epochs}",
             leave=False,
         )
-        for x, y in pbar:
+        for batch_idx, (x, y) in enumerate(pbar):
             global_step += 1
             x = x.to(dev, non_blocking=True)
             y = y.to(dev, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             lr = float(optimizer.param_groups[0]["lr"])
+            use_noise_this_step = use_noise and epoch >= noise_warmup_epochs
 
-            if use_noise:
-                with temporary_uniform_weight_noise(model, alpha=alpha):
+            if use_noise_this_step:
+                with temporary_uniform_weight_noise(
+                    model,
+                    alpha=alpha,
+                    debug_log=noise_debug_log_first_batch,
+                    debug_batch_idx=batch_idx,
+                    debug_epoch=epoch + 1,
+                ):
                     logits = model(x)
                     loss = criterion(logits, y)
+                    _check_loss_finite(loss, epoch=epoch + 1, batch_idx=batch_idx, model_name=cfg.model)
                     loss.backward()
             else:
                 logits = model(x)
                 loss = criterion(logits, y)
+                _check_loss_finite(loss, epoch=epoch + 1, batch_idx=batch_idx, model_name=cfg.model)
                 loss.backward()
 
+            _check_gradients_finite(model, epoch=epoch + 1, batch_idx=batch_idx, model_name=cfg.model)
+            if grad_clip_norm > 0.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
+            _check_weights_finite(model, epoch=epoch + 1, batch_idx=batch_idx, model_name=cfg.model)
 
             running_loss += float(loss.item())
             n_batches += 1
@@ -225,12 +309,13 @@ def train_classification(
         )
 
         logger.info(
-            "Epoch %s/%s train_loss=%.4f val_top1=%.4f val_loss=%.4f",
+            "Epoch %s/%s train_loss=%.4f val_top1=%.4f val_loss=%.4f lr=%.6g",
             epoch + 1,
             cfg.epochs,
             mean_train_loss,
             val_top1,
             val_loss,
+            float(optimizer.param_groups[0]["lr"]),
         )
 
         last_meta = CheckpointMetadata(

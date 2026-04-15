@@ -61,6 +61,11 @@ class ClassificationConfig(SharedExperimentConfig):
 
     num_classes: int = 200
     pretrained_backbone: bool = False
+    grad_clip_norm: float = 0.0
+    noise_warmup_epochs: int = 0
+    dataloader_timeout_sec: float = 0.0
+    dataloader_persistent_workers: bool = False
+    noise_debug_log_first_batch: bool = False
 
 
 @dataclass

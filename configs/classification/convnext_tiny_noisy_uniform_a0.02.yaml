@@ -7,6 +7,12 @@ seeds: [0, 1, 2]
 epochs: 100
 batch_size: 32
 num_workers: 4
+# Slightly lower LR + clipping/warmup reduce noisy-run blowups while preserving regime design.
+grad_clip_norm: 1.0
+noise_warmup_epochs: 1
+dataloader_timeout_sec: 120.0
+dataloader_persistent_workers: false
+noise_debug_log_first_batch: false
 results_dir: results
 data_root: data/tiny-imagenet-200
 bitwidths_eval: [fp32, w8, w6, w4]
@@ -16,6 +22,6 @@ num_classes: 200
 pretrained_backbone: false
 optim:
   name: sgd
-  lr: 0.1
+  lr: 0.03
   momentum: 0.9
   weight_decay: 0.0001

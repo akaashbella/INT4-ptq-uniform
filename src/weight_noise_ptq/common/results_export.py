@@ -44,6 +44,7 @@ MASTER_RESULTS_COLUMNS: tuple[str, ...] = (
     "bpp_shift_from_fp32",
     "rd_loss",
     "run_dir",
+    "status",
 )
 
 
@@ -185,7 +186,27 @@ def _collect_rows_from_run_dir(task: str, run_dir: Path) -> list[dict[str, str]]
         with eval_q.open("r", encoding="utf-8") as f:
             qdata = json.load(f)
         out.extend(_parse_eval_payload_to_rows(qdata, run_dir_s, task_hint=task))
+    if not out:
+        out.append(normalize_master_row(_incomplete_row_for_run_dir(task, run_dir)))
     return out
+
+
+def _incomplete_row_for_run_dir(task: str, run_dir: Path) -> dict[str, Any]:
+    model = run_dir.parent.parent.name if run_dir.parent.parent.exists() else ""
+    regime = run_dir.parent.name if run_dir.parent.exists() else ""
+    seed = run_dir.name.replace("seed_", "") if run_dir.name.startswith("seed_") else ""
+    status = "incomplete"
+    if not (run_dir / "config.json").is_file():
+        status = "missing_config"
+    row: dict[str, Any] = {
+        "task": task,
+        "model": model,
+        "regime": regime,
+        "seed": seed,
+        "run_dir": str(run_dir.resolve()),
+        "status": status,
+    }
+    return row
 
 
 def _parse_eval_payload_to_rows(
@@ -232,6 +253,7 @@ def _ensure_run_dir(
     if not existing and task_hint:
         r["task"] = task_hint
     r.setdefault("task", "")
+    r.setdefault("status", "ok")
     return r
 
 

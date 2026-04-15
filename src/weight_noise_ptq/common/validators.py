@@ -60,6 +60,12 @@ def validate_classification_config(cfg: ClassificationConfig) -> None:
     validate_regime_and_alpha(cfg.regime, cfg.alpha)
     validate_bitwidths_eval(list(cfg.bitwidths_eval))
     _validate_locked_epochs_and_seeds(cfg)
+    if float(cfg.grad_clip_norm) < 0.0:
+        raise ValueError(f"grad_clip_norm must be >= 0.0; got {cfg.grad_clip_norm}")
+    if int(cfg.noise_warmup_epochs) < 0:
+        raise ValueError(f"noise_warmup_epochs must be >= 0; got {cfg.noise_warmup_epochs}")
+    if float(cfg.dataloader_timeout_sec) < 0.0:
+        raise ValueError(f"dataloader_timeout_sec must be >= 0.0; got {cfg.dataloader_timeout_sec}")
 
 
 def validate_compression_config(cfg: CompressionConfig) -> None:
